@@ -78,6 +78,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "tokens": event.get("tokens"),
                                 "llm_calls": event.get("llm_calls"),
                                 "query_path": event.get("query_path"),
+                                "query_intent": event.get("query_intent"),
                                 "visualization": event.get("visualization"),
                             }
                         )

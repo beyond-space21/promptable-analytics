@@ -827,7 +827,13 @@
       const prompt = Number(t.prompt_tokens || 0);
       const completion = Number(t.completion_tokens || 0);
       const calls = Number(payload.llm_calls || 0);
-      const path = payload.query_path === "fast" ? "fast path" : "agent";
+      const path =
+        payload.query_path === "fast"
+          ? "fast path"
+          : payload.query_path === "analytical"
+            ? "analytical"
+            : "agent";
+      const intent = payload.query_intent || "";
       const parts = [`cost: $${cost}`];
       if (total > 0) {
         parts.push(
@@ -836,6 +842,9 @@
       }
       if (calls > 0) {
         parts.push(`${calls} LLM call${calls === 1 ? "" : "s"}`);
+      }
+      if (intent && intent !== "simple_metric") {
+        parts.push(intent);
       }
       parts.push(`${path} · excl. embeddings`);
       return parts.join(" · ");

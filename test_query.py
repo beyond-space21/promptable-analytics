@@ -31,6 +31,33 @@ UI_TABLE_MAX_ROWS = 20
 AGENT_MAX_ITERATIONS = 25
 FAST_PATH_ENABLED = True
 
+# Query intent: chart | analytical | simple_metric
+_CHART_SIGNALS = (
+    "chart", "graph", "plot", "pie", "bar chart", "line chart", "histogram",
+    "visualiz", "display as", "draw", "doughnut", "donut", "polar area",
+    "as a bar", "as a line", "as a pie",
+)
+_ANALYTICAL_PATTERNS = (
+    r"\bhow\b",
+    r"\bwhy\b",
+    r"\bexplain\b",
+    r"\bwhat drives\b",
+    r"\bwhat causes\b",
+    r"\bconsuming\b",
+    r"\bconsume\b",
+    r"\bbreak down\b",
+    r"\banalyse\b",
+    r"\banalyze\b",
+    r"\bunderstand\b",
+    r"\binsight\b",
+    r"\broot cause\b",
+    r"\bcontribut",
+    r"\bdriving\b",
+    r"\baccount for\b",
+    r"\bwhere is\b.*\btime\b",
+    r"\bwhere does\b",
+)
+
 # LLM Config
 LLM_MODEL = "gpt-4o"
 AUX_LLM_MODEL = "gpt-4o-mini"  # fallback SQL + summaries
@@ -235,6 +262,36 @@ _agent_system_prompt = f"""You are a ClickHouse analytics agent with live tool a
 
 You must call execute_sql before answering."""
 
+_agent_analytical_prompt = f"""You are a ClickHouse analytics investigator with live tool access. The user asked an analytical question — you MUST explore the data with multiple SQL queries before answering.
+
+## Table (already known — do NOT call list_tables)
+`{QUERY_DATABASE}.{QUERY_TABLE}` schema:
+{_TABLE_SCHEMA}
+
+## Required workflow
+1. Plan what data you need (totals, breakdowns, shares, comparisons, time patterns).
+2. Call `execute_sql` for EACH needed query — typically 2-4 queries for analytical questions.
+3. After collecting results, write a 3-5 sentence insight citing specific numbers from your queries. STOP.
+
+## Analytical SQL patterns
+- Total latency consumed: `sum(response_time_ms)` or `count() * avg(response_time_ms)` grouped by url, status_code, or method.
+- Share of total: compute totals then compare top contributors vs rest.
+- Time patterns: `toStartOfHour(timestamp)` or `toDate(timestamp)` buckets.
+- Slow vs frequent: compare `avg(response_time_ms)` with `count()` for the same dimension.
+
+## SQL rules
+- ALWAYS aggregate (GROUP BY). NEVER `SELECT *` on raw logs.
+- ALWAYS include LIMIT (max {SQL_MAX_ROWS}).
+- Use `clickhouse_docs` only after execute_sql errors.
+
+## Forbidden
+- Do NOT stop after a single query if the question needs breakdown or comparison.
+- Do NOT describe SQL without calling execute_sql.
+- Do NOT say you cannot execute queries.
+- Do NOT output Chart.js code (charts are optional and added separately if appropriate).
+
+Investigate thoroughly, then explain what the data shows."""
+
 tools = [
     QueryEngineTool.from_defaults(
         query_engine=query_engine,
@@ -260,6 +317,24 @@ agent = ReActAgent(
     system_prompt=_agent_system_prompt,
     early_stopping_method="generate",
 )
+
+analytical_agent = ReActAgent(
+    tools=tools,
+    llm=llm,
+    verbose=False,
+    system_prompt=_agent_analytical_prompt,
+    early_stopping_method="generate",
+)
+
+
+def classify_query_intent(query: str) -> str:
+    """Return chart | analytical | simple_metric."""
+    q = query.lower()
+    if any(signal in q for signal in _CHART_SIGNALS):
+        return "chart"
+    if any(re.search(pattern, q) for pattern in _ANALYTICAL_PATTERNS):
+        return "analytical"
+    return "simple_metric"
 
 def calculate_cost(usage, model: str = LLM_MODEL) -> float:
     """Calculate cost from OpenAI usage object."""
@@ -351,6 +426,8 @@ def _cost_and_usage_from_response(response, default_model: str = AUX_LLM_MODEL) 
 
 def _should_use_fast_path(query: str) -> bool:
     if not FAST_PATH_ENABLED:
+        return False
+    if classify_query_intent(query) == "analytical":
         return False
     q = query.lower()
     if any(w in q for w in ("join", "compare", "correlat", "union", "subquery", "between")):
@@ -485,6 +562,7 @@ async def run_query_stream(query: str):
     """Yield step dicts as they happen, then a final done dict."""
     from visualization import build_visualization
 
+    query_intent = classify_query_intent(query)
     steps: list[dict] = []
     sql_results: list[str] = []
     extra_cost = 0.0
@@ -506,6 +584,7 @@ async def run_query_stream(query: str):
                 "tokens": fast_tokens,
                 "llm_calls": llm_calls,
                 "query_path": query_path,
+                "query_intent": query_intent,
             }
         else:
             fast = None
@@ -513,7 +592,15 @@ async def run_query_stream(query: str):
         fast = None
 
     if not (_should_use_fast_path(query) and fast):
-        handler = agent.run(
+        if query_intent == "analytical":
+            query_path = "analytical"
+            yield {"kind": "status", "text": "Investigating…"}
+            active_agent = analytical_agent
+        else:
+            yield {"kind": "status", "text": "Thinking…"}
+            active_agent = agent
+
+        handler = active_agent.run(
             user_msg=query,
             max_iterations=AGENT_MAX_ITERATIONS,
             early_stopping_method="generate",
@@ -585,10 +672,15 @@ async def run_query_stream(query: str):
         result["tokens"] = total_tokens
         result["llm_calls"] = llm_calls
         result["query_path"] = query_path
+        result["query_intent"] = query_intent
     elif "tokens" not in result:
         result["tokens"] = _empty_usage()
+        result["query_intent"] = query_intent
 
-    yield {"kind": "status", "text": "Building visualization…"}
+    if query_intent == "analytical":
+        yield {"kind": "status", "text": "Synthesizing insight…"}
+    else:
+        yield {"kind": "status", "text": "Building visualization…"}
 
     visualization, viz_cost, viz_tokens = await build_visualization(
         user_query=query,
@@ -596,6 +688,7 @@ async def run_query_stream(query: str):
         steps=steps,
         llm=aux_llm,
         sql_results=sql_results,
+        query_intent=query_intent,
     )
     result["cost"] = result.get("cost", 0.0) + viz_cost
     result["tokens"] = _add_usage(result.get("tokens", _empty_usage()), viz_tokens)
@@ -622,6 +715,7 @@ async def run_query(query: str) -> dict:
         "tokens": result.get("tokens", _empty_usage()),
         "llm_calls": result.get("llm_calls"),
         "query_path": result.get("query_path"),
+        "query_intent": result.get("query_intent"),
         "steps": steps,
         "visualization": result.get("visualization"),
     }

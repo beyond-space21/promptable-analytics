@@ -45,6 +45,19 @@ Data: {sql_data}
 Be concise. Highlight the main insight, top value, or trend. No bullet points."""
 )
 
+ANALYTICAL_SUMMARY_PROMPT = PromptTemplate(
+    """Write a 3-5 sentence analytical insight for a business user based on this investigation.
+
+Question: {user_query}
+Investigation notes: {agent_response}
+
+SQL results collected:
+{all_sql_data}
+
+Explain how the data answers the question. Cite specific numbers (counts, averages, totals, shares).
+Compare top contributors where relevant. No bullet points."""
+)
+
 
 _META_PHRASES = (
     "cannot execute",
@@ -57,13 +70,17 @@ _META_PHRASES = (
 )
 
 
-def _is_good_agent_summary(text: str) -> bool:
-    if not text or len(text) > 450:
+def _is_good_agent_summary(text: str, *, analytical: bool = False) -> bool:
+    if not text:
+        return False
+    max_len = 1400 if analytical else 450
+    min_words = 15 if analytical else 6
+    if len(text) > max_len:
         return False
     lower = text.lower()
     if any(p in lower for p in _META_PHRASES):
         return False
-    return len(text.split()) >= 6
+    return len(text.split()) >= min_words
 
 
 def _summary_from_rows(rows: list[list[Any]] | None, user_query: str) -> str:
@@ -86,6 +103,10 @@ def _summary_from_rows(rows: list[list[Any]] | None, user_query: str) -> str:
 
 class SummaryResult(BaseModel):
     summary: str = Field(description="2-3 sentence analytical summary")
+
+
+class AnalyticalSummaryResult(BaseModel):
+    summary: str = Field(description="3-5 sentence investigative insight with cited numbers")
 
 
 class ChartPlan(BaseModel):
@@ -682,16 +703,61 @@ async def _generate_summary(
         return str(response).strip(), cost, usage
 
 
+async def _generate_analytical_summary(
+    user_query: str,
+    agent_response: str,
+    sql_results: list[str],
+    llm: LLM,
+) -> tuple[str, float, dict[str, int]]:
+    chunks: list[str] = []
+    for idx, block in enumerate(sql_results, start=1):
+        text = block if len(block) <= 1200 else block[:1200] + "\n... (truncated)"
+        chunks.append(f"--- Query {idx} results ---\n{text}")
+    all_sql_data = "\n\n".join(chunks)[:4000]
+
+    try:
+        result: AnalyticalSummaryResult = await llm.astructured_predict(
+            AnalyticalSummaryResult,
+            ANALYTICAL_SUMMARY_PROMPT,
+            user_query=user_query,
+            agent_response=agent_response,
+            all_sql_data=all_sql_data,
+        )
+        return result.summary.strip(), 0.0, _empty_usage()
+    except Exception as exc:
+        logger.warning("Analytical summary generation failed: %s", exc)
+        response = await llm.acomplete(
+            ANALYTICAL_SUMMARY_PROMPT.format(
+                user_query=user_query,
+                agent_response=agent_response,
+                all_sql_data=all_sql_data,
+            )
+        )
+        cost, usage = _usage_from_llm_response(response)
+        return str(response).strip(), cost, usage
+
+
+def _wants_chart(user_query: str, query_intent: str) -> bool:
+    if query_intent == "chart":
+        return True
+    if query_intent == "analytical":
+        return bool(_parse_visual_intent(user_query).get("chart_type"))
+    return True
+
+
 async def build_visualization(
     user_query: str,
     agent_response: str,
     steps: list[dict],
     llm: LLM,
     sql_results: list[str] | None = None,
+    query_intent: str = "simple_metric",
 ) -> tuple[dict, float, dict[str, int]]:
     intent = _parse_visual_intent(user_query)
     viz_cost = 0.0
     viz_tokens = _empty_usage()
+    analytical = query_intent == "analytical"
+    include_chart = _wants_chart(user_query, query_intent)
 
     if sql_results is None:
         sql_results = extract_sql_results(steps)
@@ -699,32 +765,34 @@ async def build_visualization(
     rows = parse_sql_rows(sql_results[-1]) if sql_results else None
     table = rows_to_table(rows)
 
-    planned_type: str | None = None
-    if rows and not intent.get("chart_type"):
-        pairs = _extract_label_value_pairs(rows)
-        labels = pairs[0] if pairs else []
-        if _is_ambiguous_chart_query(user_query, intent, labels):
-            planned_type, plan_cost, plan_tokens = await _plan_chart_with_llm(
-                user_query, rows, llm
-            )
-            viz_cost += plan_cost
-            viz_tokens = {
-                "prompt_tokens": viz_tokens["prompt_tokens"] + plan_tokens["prompt_tokens"],
-                "completion_tokens": viz_tokens["completion_tokens"] + plan_tokens["completion_tokens"],
-                "total_tokens": viz_tokens["total_tokens"] + plan_tokens["total_tokens"],
-            }
+    chart = None
+    if include_chart and rows:
+        planned_type: str | None = None
+        if not intent.get("chart_type"):
+            pairs = _extract_label_value_pairs(rows)
+            labels = pairs[0] if pairs else []
+            if _is_ambiguous_chart_query(user_query, intent, labels):
+                planned_type, plan_cost, plan_tokens = await _plan_chart_with_llm(
+                    user_query, rows, llm
+                )
+                viz_cost += plan_cost
+                viz_tokens = {
+                    "prompt_tokens": viz_tokens["prompt_tokens"] + plan_tokens["prompt_tokens"],
+                    "completion_tokens": viz_tokens["completion_tokens"] + plan_tokens["completion_tokens"],
+                    "total_tokens": viz_tokens["total_tokens"] + plan_tokens["total_tokens"],
+                }
 
-    chart = build_chart_from_rows(
-        rows, user_query, intent=intent, planned_type=planned_type
-    )
-
-    if chart is None and rows and len(rows) >= 2 and intent.get("chart_type"):
         chart = build_chart_from_rows(
-            rows,
-            user_query + " " + intent["chart_type"],
-            intent=intent,
-            planned_type=intent["chart_type"],
+            rows, user_query, intent=intent, planned_type=planned_type
         )
+
+        if chart is None and len(rows) >= 2 and intent.get("chart_type"):
+            chart = build_chart_from_rows(
+                rows,
+                user_query + " " + intent["chart_type"],
+                intent=intent,
+                planned_type=intent["chart_type"],
+            )
 
     if not sql_results:
         return {
@@ -733,7 +801,20 @@ async def build_visualization(
             "table": table,
         }, viz_cost, viz_tokens
 
-    if _is_good_agent_summary(agent_response):
+    if analytical:
+        if _is_good_agent_summary(agent_response, analytical=True):
+            summary = agent_response.strip()
+        else:
+            summary, sum_cost, sum_tokens = await _generate_analytical_summary(
+                user_query, agent_response, sql_results, llm
+            )
+            viz_cost += sum_cost
+            viz_tokens = {
+                "prompt_tokens": viz_tokens["prompt_tokens"] + sum_tokens["prompt_tokens"],
+                "completion_tokens": viz_tokens["completion_tokens"] + sum_tokens["completion_tokens"],
+                "total_tokens": viz_tokens["total_tokens"] + sum_tokens["total_tokens"],
+            }
+    elif _is_good_agent_summary(agent_response):
         summary = agent_response.strip()
     else:
         quick = _summary_from_rows(rows, user_query)
@@ -743,9 +824,15 @@ async def build_visualization(
             sql_data = sql_results[-1]
             if len(sql_data) > 1500:
                 sql_data = sql_data[:1500] + "\n... (truncated)"
-            summary, viz_cost, viz_tokens = await _generate_summary(
+            summary, sum_cost, sum_tokens = await _generate_summary(
                 user_query, agent_response, sql_data, llm
             )
+            viz_cost += sum_cost
+            viz_tokens = {
+                "prompt_tokens": viz_tokens["prompt_tokens"] + sum_tokens["prompt_tokens"],
+                "completion_tokens": viz_tokens["completion_tokens"] + sum_tokens["completion_tokens"],
+                "total_tokens": viz_tokens["total_tokens"] + sum_tokens["total_tokens"],
+            }
 
     return {
         "summary": summary or agent_response.strip(),
