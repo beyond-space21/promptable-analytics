@@ -9,8 +9,8 @@
     :root {
       --bg: #f4f4f2;
       --paper: #fafaf8;
-      --ink: #1a1a1a;
-      --muted: #6b6b6b;
+      --ink: #0f0f0f;
+      --muted: #3a3a3a;
       --line: #1a1a1a;
       --line-light: #c8c8c4;
       --line-dashed: #a8a8a4;
@@ -156,7 +156,7 @@
       background: #fff;
     }
 
-    .query-card textarea::placeholder { color: #aaa; }
+    .query-card textarea::placeholder { color: #5c5c5c; }
 
     .actions {
       display: flex;
@@ -444,6 +444,7 @@
     table.data-table td {
       font-family: "IBM Plex Mono", monospace;
       font-size: 0.78rem;
+      color: var(--ink);
     }
 
     table.data-table tr:nth-child(even) td {
@@ -567,8 +568,8 @@
     const THINKING_CLOSE_MS = 480;
 
     const WF_CHART = {
-      ink: "#64748b",
-      muted: "#94a3b8",
+      ink: "#2d3748",
+      muted: "#4a5568",
       grid: "#eef2f6",
       line: { border: "#7cb9f5", fill: "rgba(124, 185, 245, 0.2)" },
       fills: [
@@ -704,12 +705,17 @@
             next.pointBackgroundColor = WF_CHART.line.border;
             next.pointBorderColor = "#fff";
             next.tension = 0.35;
+          } else if (type === "scatter") {
+            next.backgroundColor = WF_CHART.fills[0];
+            next.borderColor = WF_CHART.borders[0];
+            next.pointRadius = 5;
+            next.pointHoverRadius = 7;
           } else if (type === "bar") {
-            next.backgroundColor = WF_CHART.fills.slice(0, n);
-            next.borderColor = WF_CHART.borders.slice(0, n);
+            next.backgroundColor = WF_CHART.fills.slice(0, n || ds.data?.length || 1);
+            next.borderColor = WF_CHART.borders.slice(0, n || ds.data?.length || 1);
             next.borderRadius = 4;
           } else {
-            next.backgroundColor = WF_CHART.fills.slice(0, n);
+            next.backgroundColor = WF_CHART.fills.slice(0, n || ds.data?.length || 1);
             next.borderColor = "#fff";
             next.borderWidth = 2;
           }
@@ -726,6 +732,7 @@
       chartCard.querySelector(".chart-wrap")?.classList.add("has-chart");
       const labels = chartSpec.data.labels || [];
       const manyLabels = labels.length > 8;
+      const isHorizontalBar = chartSpec.type === "bar" && chartSpec.options?.indexAxis === "y";
 
       const config = {
         type: chartSpec.type,
@@ -749,19 +756,34 @@
           grid: { color: WF_CHART.grid },
           border: { color: "#e2e8f0" },
         };
-        config.options.scales = {
-          x: {
-            ...axis,
-            ticks: {
-              ...axis.ticks,
-              maxRotation: manyLabels ? 45 : 0,
-              autoSkip: true,
-              maxTicksLimit: manyLabels ? 12 : undefined,
+        if (isHorizontalBar) {
+          config.options.scales = {
+            x: { ...axis, beginAtZero: true },
+            y: {
+              ...axis,
+              ticks: {
+                ...axis.ticks,
+                autoSkip: true,
+                maxTicksLimit: manyLabels ? 12 : undefined,
+              },
             },
-          },
-          y: { ...axis, beginAtZero: true },
-          ...config.options.scales,
-        };
+            ...config.options.scales,
+          };
+        } else {
+          config.options.scales = {
+            x: {
+              ...axis,
+              ticks: {
+                ...axis.ticks,
+                maxRotation: manyLabels ? 45 : 0,
+                autoSkip: true,
+                maxTicksLimit: manyLabels ? 12 : undefined,
+              },
+            },
+            y: { ...axis, beginAtZero: true },
+            ...config.options.scales,
+          };
+        }
       }
 
       try {

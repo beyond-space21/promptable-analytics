@@ -2,13 +2,27 @@ import ast
 import logging
 import re
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from llama_index.core import PromptTemplate
 from llama_index.core.llms import LLM
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+ChartType = Literal[
+    "bar",
+    "bar_horizontal",
+    "line",
+    "pie",
+    "doughnut",
+    "polarArea",
+    "scatter",
+]
+
+LABEL_VALUE_CHARTS = frozenset({"bar", "bar_horizontal", "line", "pie", "doughnut", "polarArea"})
+XY_CHARTS = frozenset({"scatter", "line"})
+RADIAL_CHARTS = frozenset({"pie", "doughnut", "polarArea"})
 
 CHART_PALETTE = [
     "rgba(79, 140, 255, 0.75)",
@@ -72,6 +86,32 @@ def _summary_from_rows(rows: list[list[Any]] | None, user_query: str) -> str:
 
 class SummaryResult(BaseModel):
     summary: str = Field(description="2-3 sentence analytical summary")
+
+
+class ChartPlan(BaseModel):
+    chart_type: ChartType = Field(description="Best Chart.js chart type for this data")
+    reason: str = Field(default="", description="One-line reason for the choice")
+
+
+CHART_PLAN_PROMPT = PromptTemplate(
+    """Pick the best chart type for this analytics query and SQL result sample.
+
+Question: {user_query}
+Data shape: {data_shape}
+Number of data points: {label_count}
+Sample rows: {sample_rows}
+
+Allowed types: bar, bar_horizontal, line, pie, doughnut, polarArea, scatter
+
+Guidelines:
+- Dates or time buckets → line
+- Share, proportion, part-of-whole with ≤12 categories → pie or doughnut
+- Compare magnitudes radially → polarArea
+- Rankings / top-N with long category names → bar_horizontal
+- Compare discrete categories → bar
+- Two numeric columns, no category labels → scatter
+- When unsure → bar"""
+)
 
 
 def _empty_usage() -> dict[str, int]:
@@ -234,8 +274,12 @@ def _parse_visual_intent(user_query: str) -> dict[str, Any]:
         intent["chart_type"] = "pie"
     elif re.search(r"\bdoughnut[\s-]?chart\b|\bdonut[\s-]?chart\b|\bas a doughnut\b", q):
         intent["chart_type"] = "doughnut"
+    elif re.search(r"\bpolar[\s-]?area\b|\bas a polar\b", q):
+        intent["chart_type"] = "polarArea"
     elif re.search(r"\bline[\s-]?chart\b|\bas a line\b", q):
         intent["chart_type"] = "line"
+    elif re.search(r"\bhorizontal[\s-]?bar\b|\bbar chart horizontal\b|\bas a horizontal bar\b", q):
+        intent["chart_type"] = "bar_horizontal"
     elif re.search(r"\bbar[\s-]?chart\b|\bas a bar\b|\bhistogram\b", q):
         intent["chart_type"] = "bar"
     elif re.search(r"\bscatter[\s-]?chart\b|\bscatter plot\b", q):
@@ -260,9 +304,34 @@ def _truncate_label(label: str, max_len: int = 48) -> str:
     return label[: max_len - 1] + "…"
 
 
-def _infer_chart_type(labels: list[str], user_query: str, explicit_type: str | None = None) -> str:
+def _infer_data_shape(rows: list[list[Any]]) -> str:
+    if not rows:
+        return "unknown"
+    sample = rows[0]
+    if len(sample) >= 2 and _is_numeric(sample[0]) and _is_numeric(sample[1]):
+        if not any(not _is_numeric(row[0]) for row in rows[:5] if len(row) >= 2):
+            return "xy"
+    return "label_value"
+
+
+def _avg_label_length(labels: list[str]) -> float:
+    if not labels:
+        return 0.0
+    return sum(len(label) for label in labels) / len(labels)
+
+
+def _heuristic_chart_type(
+    labels: list[str],
+    user_query: str,
+    *,
+    data_shape: str,
+    explicit_type: str | None = None,
+) -> str:
     if explicit_type:
         return explicit_type
+
+    if data_shape == "xy":
+        return "scatter"
 
     q = user_query.lower()
     if any(
@@ -288,7 +357,71 @@ def _infer_chart_type(labels: list[str], user_query: str, explicit_type: str | N
         return "line"
     if any(w in q for w in ("distribution", "proportion", "percentage", "share", "breakdown", "pie", "part of")):
         return "pie" if len(labels) <= 12 else "bar"
+    if len(labels) >= 6 and _avg_label_length(labels) > 22:
+        return "bar_horizontal"
     return "bar"
+
+
+def _validate_chart_type(
+    chart_type: str,
+    *,
+    data_shape: str,
+    label_count: int,
+) -> str:
+    if data_shape == "xy":
+        if chart_type in RADIAL_CHARTS or chart_type == "bar_horizontal":
+            return "scatter"
+        if chart_type in LABEL_VALUE_CHARTS and chart_type != "line":
+            return "scatter"
+        return chart_type
+
+    if chart_type in XY_CHARTS and chart_type != "line":
+        return "bar"
+    if chart_type in RADIAL_CHARTS and label_count > 12:
+        return "bar_horizontal" if label_count >= 6 else "bar"
+    if chart_type == "line" and label_count > 40:
+        return "bar"
+    return chart_type
+
+
+def _is_ambiguous_chart_query(
+    user_query: str,
+    intent: dict[str, Any],
+    labels: list[str],
+) -> bool:
+    if intent.get("chart_type"):
+        return False
+
+    q = user_query.lower()
+    if any(
+        s in q
+        for s in (
+            "over time",
+            "per day",
+            "daily",
+            "weekly",
+            "monthly",
+            "trend",
+            "timeline",
+            "pie",
+            "doughnut",
+            "donut",
+            "share",
+            "breakdown",
+            "distribution",
+            "proportion",
+            "line chart",
+            "bar chart",
+            "horizontal bar",
+            "scatter",
+            "polar",
+        )
+    ):
+        return False
+    if _looks_like_dates(labels):
+        return False
+
+    return any(w in q for w in ("chart", "graph", "plot", "visualiz", "display", "draw"))
 
 
 def _extract_label_value_pairs(
@@ -325,37 +458,71 @@ def _extract_label_value_pairs(
     return labels, values
 
 
-def build_chart_from_rows(
-    rows: list[list[Any]] | None,
-    user_query: str,
-    intent: dict[str, Any] | None = None,
-) -> dict | None:
-    if not rows:
+def _extract_xy_pairs(
+    rows: list[list[Any]],
+    row_limit: int = 20,
+) -> tuple[list[float], list[float]] | None:
+    if not rows or len(rows) < 2:
         return None
 
-    intent = intent or _parse_visual_intent(user_query)
-    row_limit = intent.get("limit") or 20
+    xs: list[float] = []
+    ys: list[float] = []
+    for row in rows[:row_limit]:
+        if len(row) < 2 or not _is_numeric(row[0]) or not _is_numeric(row[1]):
+            continue
+        xs.append(float(row[0]))
+        ys.append(float(row[1]))
 
-    pairs = _extract_label_value_pairs(rows, row_limit=row_limit)
-    if not pairs:
+    if len(xs) < 2:
         return None
+    return xs, ys
 
-    labels, values = pairs
-    chart_type = _infer_chart_type(labels, user_query, explicit_type=intent.get("chart_type"))
+
+def _dataset_label(user_query: str) -> str:
     q_lower = user_query.lower()
     if "response time" in q_lower or "latency" in q_lower:
-        dataset_label = "Avg response time (ms)"
-    elif "count" in q_lower or "active" in q_lower or "famous" in q_lower or "popular" in q_lower:
-        dataset_label = "Count"
-    else:
-        dataset_label = "Value"
+        return "Avg response time (ms)"
+    if any(w in q_lower for w in ("count", "active", "famous", "popular", "requests")):
+        return "Count"
+    return "Value"
 
-    dataset: dict[str, Any] = {
+
+def _build_chart_config(
+    chart_type: str,
+    labels: list[str],
+    values: list[float],
+    *,
+    user_query: str,
+    xy: tuple[list[float], list[float]] | None = None,
+) -> dict[str, Any]:
+    dataset_label = _dataset_label(user_query)
+    js_type = "bar" if chart_type == "bar_horizontal" else chart_type
+
+    if chart_type == "scatter" and xy:
+        xs, ys = xy
+        dataset: dict[str, Any] = {
+            "label": dataset_label,
+            "data": [{"x": x, "y": y} for x, y in zip(xs, ys)],
+            "backgroundColor": CHART_PALETTE[0],
+            "borderColor": CHART_PALETTE[0].replace("0.75", "1"),
+            "pointRadius": 5,
+        }
+        options: dict[str, Any] = {
+            "responsive": True,
+            "plugins": {"legend": {"display": True}},
+        }
+        return {
+            "type": js_type,
+            "data": {"datasets": [dataset]},
+            "options": options,
+        }
+
+    dataset = {
         "label": dataset_label,
         "data": values,
     }
 
-    if chart_type in ("pie", "doughnut"):
+    if chart_type in RADIAL_CHARTS:
         dataset["backgroundColor"] = CHART_PALETTE[: len(labels)]
         dataset["borderWidth"] = 1
     elif chart_type == "line":
@@ -367,18 +534,124 @@ def build_chart_from_rows(
         dataset["backgroundColor"] = CHART_PALETTE[: len(labels)]
         dataset["borderRadius"] = 6
 
-    options: dict[str, Any] = {
+    options = {
         "responsive": True,
-        "plugins": {"legend": {"display": chart_type in ("pie", "doughnut", "line")}},
+        "plugins": {"legend": {"display": chart_type in RADIAL_CHARTS | {"line"}}},
     }
-    if chart_type in ("pie", "doughnut"):
+    if chart_type in RADIAL_CHARTS:
         options["plugins"]["legend"]["position"] = "right"
+    if chart_type == "bar_horizontal":
+        options["indexAxis"] = "y"
 
     return {
-        "type": chart_type,
+        "type": js_type,
         "data": {"labels": labels, "datasets": [dataset]},
         "options": options,
     }
+
+
+async def _plan_chart_with_llm(
+    user_query: str,
+    rows: list[list[Any]],
+    llm: LLM,
+) -> tuple[str, float, dict[str, int]]:
+    data_shape = _infer_data_shape(rows)
+    sample = rows[:5]
+    label_count = len(rows)
+    if data_shape == "label_value":
+        pairs = _extract_label_value_pairs(rows, row_limit=100)
+        label_count = len(pairs[0]) if pairs else len(rows)
+
+    try:
+        plan: ChartPlan = await llm.astructured_predict(
+            ChartPlan,
+            CHART_PLAN_PROMPT,
+            user_query=user_query,
+            data_shape=data_shape,
+            label_count=label_count,
+            sample_rows=str(sample)[:800],
+        )
+        chart_type = _validate_chart_type(
+            plan.chart_type,
+            data_shape=data_shape,
+            label_count=label_count,
+        )
+        return chart_type, 0.0, _empty_usage()
+    except Exception as exc:
+        logger.warning("Chart planning failed: %s", exc)
+        response = await llm.acomplete(
+            CHART_PLAN_PROMPT.format(
+                user_query=user_query,
+                data_shape=data_shape,
+                label_count=label_count,
+                sample_rows=str(sample)[:800],
+            )
+        )
+        cost, usage = _usage_from_llm_response(response)
+        text = str(response).lower()
+        for candidate in (
+            "bar_horizontal",
+            "polararea",
+            "doughnut",
+            "scatter",
+            "line",
+            "pie",
+            "bar",
+        ):
+            if candidate in text:
+                resolved = "polarArea" if candidate == "polararea" else candidate
+                return _validate_chart_type(
+                    resolved,
+                    data_shape=data_shape,
+                    label_count=label_count,
+                ), cost, usage
+        return "bar", cost, usage
+
+
+def build_chart_from_rows(
+    rows: list[list[Any]] | None,
+    user_query: str,
+    intent: dict[str, Any] | None = None,
+    *,
+    planned_type: str | None = None,
+) -> dict | None:
+    if not rows:
+        return None
+
+    intent = intent or _parse_visual_intent(user_query)
+    row_limit = intent.get("limit") or 20
+    data_shape = _infer_data_shape(rows)
+
+    if data_shape == "xy":
+        xy = _extract_xy_pairs(rows, row_limit=row_limit)
+        if not xy:
+            return None
+        explicit = planned_type or intent.get("chart_type")
+        chart_type = _validate_chart_type(
+            _heuristic_chart_type([], user_query, data_shape=data_shape, explicit_type=explicit),
+            data_shape=data_shape,
+            label_count=len(xy[0]),
+        )
+        return _build_chart_config(chart_type, [], [], user_query=user_query, xy=xy)
+
+    pairs = _extract_label_value_pairs(rows, row_limit=row_limit)
+    if not pairs:
+        return None
+
+    labels, values = pairs
+    explicit = planned_type or intent.get("chart_type")
+    chart_type = _heuristic_chart_type(
+        labels,
+        user_query,
+        data_shape=data_shape,
+        explicit_type=explicit,
+    )
+    chart_type = _validate_chart_type(
+        chart_type,
+        data_shape=data_shape,
+        label_count=len(labels),
+    )
+    return _build_chart_config(chart_type, labels, values, user_query=user_query)
 
 
 async def _generate_summary(
@@ -425,10 +698,33 @@ async def build_visualization(
 
     rows = parse_sql_rows(sql_results[-1]) if sql_results else None
     table = rows_to_table(rows)
-    chart = build_chart_from_rows(rows, user_query, intent=intent)
+
+    planned_type: str | None = None
+    if rows and not intent.get("chart_type"):
+        pairs = _extract_label_value_pairs(rows)
+        labels = pairs[0] if pairs else []
+        if _is_ambiguous_chart_query(user_query, intent, labels):
+            planned_type, plan_cost, plan_tokens = await _plan_chart_with_llm(
+                user_query, rows, llm
+            )
+            viz_cost += plan_cost
+            viz_tokens = {
+                "prompt_tokens": viz_tokens["prompt_tokens"] + plan_tokens["prompt_tokens"],
+                "completion_tokens": viz_tokens["completion_tokens"] + plan_tokens["completion_tokens"],
+                "total_tokens": viz_tokens["total_tokens"] + plan_tokens["total_tokens"],
+            }
+
+    chart = build_chart_from_rows(
+        rows, user_query, intent=intent, planned_type=planned_type
+    )
 
     if chart is None and rows and len(rows) >= 2 and intent.get("chart_type"):
-        chart = build_chart_from_rows(rows, user_query + " " + intent["chart_type"], intent=intent)
+        chart = build_chart_from_rows(
+            rows,
+            user_query + " " + intent["chart_type"],
+            intent=intent,
+            planned_type=intent["chart_type"],
+        )
 
     if not sql_results:
         return {
