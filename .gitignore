@@ -1,0 +1,7 @@
+.env
+venv/
+CH/data/
+CH/logs/
+CH/SECRETS/
+Chart.js/
+clickhouse-docs/
