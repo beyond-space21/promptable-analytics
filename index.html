@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Promptable Analytics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #f4f4f2;
+      --paper: #fafaf8;
+      --ink: #1a1a1a;
+      --muted: #6b6b6b;
+      --line: #1a1a1a;
+      --line-light: #c8c8c4;
+      --line-dashed: #a8a8a4;
+      --grid: rgba(0, 0, 0, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Helvetica Neue", system-ui, sans-serif;
+      background-color: var(--bg);
+      background-image:
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+      background-size: 24px 24px;
+      color: var(--ink);
+      min-height: 100vh;
+      line-height: 1.5;
+      font-size: 15px;
+    }
+
+    .wrap {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    /* ── Wireframe frame ── */
+    .frame {
+      border: 2px solid var(--line);
+      background: var(--paper);
+      position: relative;
+    }
+
+    .frame::before,
+    .frame::after {
+      content: "";
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      border: 2px solid var(--line);
+      background: var(--paper);
+    }
+
+    .frame::before { top: -5px; left: -5px; }
+    .frame::after  { bottom: -5px; right: -5px; }
+
+    .wf-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 0 0 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .wf-label::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--line-light);
+    }
+
+    .hidden { display: none !important; }
+
+    /* ── Header ── */
+    header {
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+      border-bottom: 2px solid var(--line);
+    }
+
+    header .wf-label { margin-bottom: 8px; }
+    header .wf-label::after { display: none; }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .logo-link {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      padding: 6px 8px;
+      border: 1px solid var(--line-light);
+      background: #fff;
+      line-height: 0;
+      transition: border-color 0.15s;
+    }
+
+    .logo-link:hover {
+      border-color: var(--line);
+    }
+
+    .logo-link img {
+      height: 28px;
+      width: auto;
+      display: block;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* ── Query block ── */
+    .block {
+      margin-bottom: 20px;
+      padding: 20px;
+    }
+
+    .query-card textarea {
+      width: 100%;
+      min-height: 80px;
+      padding: 12px 14px;
+      font-size: 0.95rem;
+      font-family: inherit;
+      color: var(--ink);
+      background: transparent;
+      border: 1px dashed var(--line-dashed);
+      border-radius: 0;
+      resize: vertical;
+      outline: none;
+      transition: border-style 0.15s, background 0.15s;
+    }
+
+    .query-card textarea:focus {
+      border-style: solid;
+      background: #fff;
+    }
+
+    .query-card textarea::placeholder { color: #aaa; }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 14px;
+    }
+
+    button {
+      padding: 8px 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      font-family: inherit;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ink);
+      background: transparent;
+      border: 2px solid var(--line);
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--ink);
+      color: var(--paper);
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: wait;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-family: "IBM Plex Mono", monospace;
+    }
+
+    /* ── Thinking ── */
+    details.thinking {
+      margin-bottom: 20px;
+      border: 2px solid var(--line);
+      background: var(--paper);
+      overflow: hidden;
+    }
+
+    details.thinking summary {
+      padding: 12px 16px;
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      user-select: none;
+      list-style: none;
+      border-bottom: 1px solid transparent;
+      transition: border-color 0.45s ease, color 0.45s ease;
+    }
+
+    details.thinking[open] summary {
+      border-bottom-color: var(--line-light);
+    }
+
+    details.thinking summary::-webkit-details-marker { display: none; }
+
+    details.thinking summary::before {
+      content: "[+] ";
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--ink);
+      transition: content 0s 0.45s;
+    }
+
+    details.thinking[open] summary::before { content: "[−] "; }
+
+    details.thinking.closing summary {
+      border-bottom-color: transparent;
+      color: var(--ink);
+    }
+
+    .thinking-collapse {
+      display: grid;
+      grid-template-rows: 1fr;
+      transition: grid-template-rows 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    details.thinking.closing .thinking-collapse {
+      grid-template-rows: 0fr;
+    }
+
+    .thinking-collapse-inner {
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    #thinking {
+      padding: 14px 16px 16px;
+      min-height: 44px;
+      transition: opacity 0.35s ease, transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    details.thinking.closing #thinking {
+      opacity: 0;
+      transform: translateY(-12px) scale(0.98);
+      transform-origin: top center;
+    }
+
+    #thinking.has-steps {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      gap: 0;
+      overflow-x: auto;
+      scroll-behavior: smooth;
+    }
+
+    #thinking.has-steps::-webkit-scrollbar { height: 4px; }
+    #thinking.has-steps::-webkit-scrollbar-thumb { background: var(--line-light); }
+
+    .step {
+      flex: 0 0 auto;
+      min-width: 150px;
+      max-width: 240px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      background: #fff;
+      animation: fadeIn 0.2s ease;
+    }
+
+    .step.tool_call {
+      min-width: 220px;
+      max-width: min(480px, 58vw);
+      width: max-content;
+      border-style: dashed;
+    }
+
+    .step.tool_result {
+      min-width: 180px;
+      max-width: min(360px, 48vw);
+    }
+
+    .step-arrow {
+      flex: 0 0 auto;
+      align-self: center;
+      color: var(--muted);
+      padding: 0 4px;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.85rem;
+      user-select: none;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(4px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    .step-title {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+      color: var(--muted);
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--line-light);
+    }
+
+    .step-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.75rem;
+      font-family: "IBM Plex Mono", monospace;
+      line-height: 1.4;
+      color: var(--ink);
+    }
+
+    .step.tool_call .step-text {
+      max-height: none;
+      overflow: visible;
+    }
+
+    .step.tool_result .step-text,
+    .step.reasoning .step-text {
+      max-height: 88px;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 5;
+      -webkit-box-orient: vertical;
+    }
+
+    .loading {
+      color: var(--muted);
+      font-style: italic;
+      font-size: 0.85rem;
+      font-family: "IBM Plex Mono", monospace;
+    }
+
+    .pulse::after {
+      content: " _";
+      animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* ── Results grid ── */
+    #results.hidden { display: none; }
+
+    .results-grid {
+      display: grid;
+      gap: 20px;
+    }
+
+    .result-block {
+      padding: 20px;
+      border: 2px solid var(--line);
+      background: var(--paper);
+    }
+
+    .summary-text {
+      font-size: 0.95rem;
+      line-height: 1.65;
+      margin: 0;
+      color: var(--ink);
+    }
+
+    .chart-wrap {
+      position: relative;
+      height: 300px;
+      border: 1px dashed var(--line-dashed);
+      padding: 12px;
+      background: #fff;
+    }
+
+    .chart-wrap::before {
+      content: "CHART AREA";
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      color: var(--line-light);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .chart-wrap canvas {
+      position: relative;
+      z-index: 1;
+    }
+
+    .chart-wrap.has-chart::before {
+      display: none;
+    }
+
+    .table-wrap { overflow-x: auto; }
+
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+      border: 1px solid var(--line);
+    }
+
+    table.data-table th,
+    table.data-table td {
+      padding: 8px 12px;
+      text-align: left;
+      border: 1px solid var(--line-light);
+    }
+
+    table.data-table th {
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: #f0f0ee;
+    }
+
+    table.data-table td {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.78rem;
+    }
+
+    table.data-table tr:nth-child(even) td {
+      background: rgba(0, 0, 0, 0.02);
+    }
+
+    .table-note {
+      margin-top: 8px;
+      font-size: 0.75rem;
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--muted);
+    }
+
+    #meta {
+      margin-top: 4px;
+      padding: 10px 0;
+      font-size: 0.75rem;
+      font-family: "IBM Plex Mono", monospace;
+      color: var(--muted);
+      border-top: 1px solid var(--line-light);
+    }
+
+    .error-card {
+      border: 2px solid var(--line);
+      border-left-width: 6px;
+      padding: 20px;
+      background: #fff;
+    }
+
+    .error-card .wf-label { color: var(--ink); }
+
+    #error-text {
+      margin: 0;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.85rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="wf-label">Application</div>
+      <div class="brand-row">
+        <a href="https://www.hiffi.com/" class="logo-link" title="Hiffi" target="_blank" rel="noopener noreferrer">
+          <img src="https://www.hiffi.com/hiffi_logo.png" alt="Hiffi">
+        </a>
+        <h1>Promptable Analytics</h1>
+      </div>
+      <p>Natural language → ClickHouse → insight, chart, data</p>
+    </header>
+
+    <section class="frame query-card block">
+      <div class="wf-label">01 · Query input</div>
+      <textarea id="query" placeholder="e.g. Show top 10 URLs by request count as a pie chart"></textarea>
+      <div class="actions">
+        <button id="ask">Run analysis</button>
+        <span class="hint">ctrl + enter</span>
+      </div>
+    </section>
+
+    <details class="thinking" id="thinking-panel" open>
+      <summary id="thinking-summary">02 · Thinking</summary>
+      <div class="thinking-collapse">
+        <div class="thinking-collapse-inner">
+          <div id="thinking" class="loading">Waiting for input…</div>
+        </div>
+      </div>
+    </details>
+
+    <div id="results" class="hidden">
+      <div class="results-grid">
+        <section class="result-block" id="summary-card">
+          <div class="wf-label">03 · Insight</div>
+          <p class="summary-text" id="summary"></p>
+        </section>
+
+        <section class="result-block hidden" id="chart-card">
+          <div class="wf-label">04 · Chart</div>
+          <div class="chart-wrap">
+            <canvas id="chart"></canvas>
+          </div>
+        </section>
+
+        <section class="result-block hidden" id="table-card">
+          <div class="wf-label">05 · Data table</div>
+          <div class="table-wrap" id="table-wrap"></div>
+        </section>
+      </div>
+      <div id="meta"></div>
+    </div>
+
+    <section class="error-card hidden" id="error-card">
+      <div class="wf-label">Error</div>
+      <p id="error-text"></p>
+    </section>
+  </div>
+
+  <script>
+    const queryEl = document.getElementById("query");
+    const askBtn = document.getElementById("ask");
+    const thinkingPanel = document.getElementById("thinking-panel");
+    const thinkingSummary = document.getElementById("thinking-summary");
+    const thinkingEl = document.getElementById("thinking");
+    const resultsEl = document.getElementById("results");
+    const summaryEl = document.getElementById("summary");
+    const chartCard = document.getElementById("chart-card");
+    const chartCanvas = document.getElementById("chart");
+    const tableCard = document.getElementById("table-card");
+    const tableWrap = document.getElementById("table-wrap");
+    const metaEl = document.getElementById("meta");
+    const errorCard = document.getElementById("error-card");
+    const errorText = document.getElementById("error-text");
+
+    let chartInstance = null;
+    let stepCount = 0;
+    let thinkingTimer = null;
+    let thinkingStartedAt = 0;
+    let thinkingRenderedAt = 0;
+    let thinkingCloseId = 0;
+    const MIN_THINKING_MS = 2000;
+    const THINKING_CLOSE_MS = 480;
+
+    const WF_CHART = {
+      ink: "#64748b",
+      muted: "#94a3b8",
+      grid: "#eef2f6",
+      line: { border: "#7cb9f5", fill: "rgba(124, 185, 245, 0.2)" },
+      fills: [
+        "rgba(147, 197, 253, 0.85)",
+        "rgba(134, 239, 172, 0.85)",
+        "rgba(253, 186, 116, 0.85)",
+        "rgba(196, 181, 253, 0.85)",
+        "rgba(249, 168, 212, 0.85)",
+        "rgba(94, 234, 212, 0.85)",
+        "rgba(253, 224, 71, 0.85)",
+        "rgba(253, 164, 175, 0.85)",
+        "rgba(167, 243, 208, 0.85)",
+        "rgba(191, 219, 254, 0.85)",
+      ],
+      borders: [
+        "#93c5fd", "#6ee7a0", "#fdba74", "#c4b5fd",
+        "#f9a8d4", "#5eead4", "#fde047", "#fda4af",
+        "#34d399", "#60a5fa",
+      ],
+    };
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function stepHtml(step) {
+      return `
+        <div class="step ${step.type}">
+          <div class="step-title">${escapeHtml(step.title)}</div>
+          ${step.text ? `<div class="step-text">${escapeHtml(step.text)}</div>` : ""}
+        </div>
+      `;
+    }
+
+    function appendStep(step) {
+      stepCount += 1;
+      const secs = Math.floor((Date.now() - thinkingStartedAt) / 1000);
+      thinkingSummary.textContent = `02 · Thinking (${stepCount} steps · ${secs}s)`;
+      if (thinkingEl.classList.contains("loading")) {
+        thinkingEl.classList.remove("loading", "pulse");
+        thinkingEl.classList.add("has-steps");
+        thinkingEl.innerHTML = "";
+      }
+      if (stepCount > 1) {
+        thinkingEl.insertAdjacentHTML("beforeend", '<span class="step-arrow">→</span>');
+      }
+      thinkingEl.insertAdjacentHTML("beforeend", stepHtml(step));
+      thinkingEl.scrollLeft = thinkingEl.scrollWidth;
+      thinkingRenderedAt = Date.now();
+    }
+
+    function startThinkingTimer() {
+      stopThinkingTimer();
+      thinkingStartedAt = Date.now();
+      thinkingTimer = setInterval(() => {
+        const secs = Math.floor((Date.now() - thinkingStartedAt) / 1000);
+        if (stepCount === 0) {
+          thinkingSummary.textContent = `02 · Thinking (${secs}s)`;
+        } else {
+          thinkingSummary.textContent = `02 · Thinking (${stepCount} steps · ${secs}s)`;
+        }
+      }, 1000);
+    }
+
+    function stopThinkingTimer() {
+      if (thinkingTimer) {
+        clearInterval(thinkingTimer);
+        thinkingTimer = null;
+      }
+    }
+
+    function cancelThinkingClose() {
+      thinkingCloseId += 1;
+      thinkingPanel.classList.remove("closing");
+      thinkingPanel.style.pointerEvents = "";
+    }
+
+    async function closeThinkingSmoothly() {
+      const closeId = ++thinkingCloseId;
+      const anchor = thinkingRenderedAt || Date.now();
+      const remaining = Math.max(0, MIN_THINKING_MS - (Date.now() - anchor));
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
+      if (closeId !== thinkingCloseId) return;
+
+      thinkingPanel.style.pointerEvents = "none";
+      thinkingPanel.classList.add("closing");
+      await new Promise((resolve) => setTimeout(resolve, THINKING_CLOSE_MS));
+      if (closeId !== thinkingCloseId) return;
+
+      thinkingPanel.open = false;
+      thinkingPanel.classList.remove("closing");
+      thinkingPanel.style.pointerEvents = "";
+    }
+
+    function resetUI() {
+      cancelThinkingClose();
+      stopThinkingTimer();
+      stepCount = 0;
+      thinkingRenderedAt = 0;
+      thinkingSummary.textContent = "02 · Thinking";
+      thinkingPanel.open = true;
+      thinkingEl.className = "loading pulse";
+      thinkingEl.classList.remove("has-steps");
+      thinkingEl.textContent = "Analyzing…";
+      resultsEl.classList.add("hidden");
+      errorCard.classList.add("hidden");
+      chartCard.classList.add("hidden");
+      chartCard.querySelector(".chart-wrap")?.classList.remove("has-chart");
+      tableCard.classList.add("hidden");
+      tableWrap.innerHTML = "";
+      metaEl.textContent = "";
+      if (chartInstance) {
+        chartInstance.destroy();
+        chartInstance = null;
+      }
+    }
+
+    function wireframeChartData(chartSpec) {
+      const data = JSON.parse(JSON.stringify(chartSpec.data));
+      const type = chartSpec.type;
+      const n = (data.labels || []).length;
+      if (data.datasets) {
+        data.datasets = data.datasets.map((ds) => {
+          const next = { ...ds, borderWidth: type === "line" ? 2 : 1 };
+          if (type === "line") {
+            next.borderColor = WF_CHART.line.border;
+            next.backgroundColor = WF_CHART.line.fill;
+            next.pointBackgroundColor = WF_CHART.line.border;
+            next.pointBorderColor = "#fff";
+            next.tension = 0.35;
+          } else if (type === "bar") {
+            next.backgroundColor = WF_CHART.fills.slice(0, n);
+            next.borderColor = WF_CHART.borders.slice(0, n);
+            next.borderRadius = 4;
+          } else {
+            next.backgroundColor = WF_CHART.fills.slice(0, n);
+            next.borderColor = "#fff";
+            next.borderWidth = 2;
+          }
+          return next;
+        });
+      }
+      return data;
+    }
+
+    function renderChart(chartSpec) {
+      if (!chartSpec || !chartSpec.type || !chartSpec.data) return;
+
+      chartCard.classList.remove("hidden");
+      chartCard.querySelector(".chart-wrap")?.classList.add("has-chart");
+      const labels = chartSpec.data.labels || [];
+      const manyLabels = labels.length > 8;
+
+      const config = {
+        type: chartSpec.type,
+        data: wireframeChartData(chartSpec),
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              labels: { color: WF_CHART.muted, font: { family: "IBM Plex Mono", size: 10 }, boxWidth: 12 },
+            },
+          },
+          scales: {},
+          ...chartSpec.options,
+        },
+      };
+
+      if (["bar", "line", "scatter"].includes(chartSpec.type)) {
+        const axis = {
+          ticks: { color: WF_CHART.muted, font: { family: "IBM Plex Mono", size: 10 } },
+          grid: { color: WF_CHART.grid },
+          border: { color: "#e2e8f0" },
+        };
+        config.options.scales = {
+          x: {
+            ...axis,
+            ticks: {
+              ...axis.ticks,
+              maxRotation: manyLabels ? 45 : 0,
+              autoSkip: true,
+              maxTicksLimit: manyLabels ? 12 : undefined,
+            },
+          },
+          y: { ...axis, beginAtZero: true },
+          ...config.options.scales,
+        };
+      }
+
+      try {
+        if (chartInstance) {
+          chartInstance.destroy();
+          chartInstance = null;
+        }
+        chartInstance = new Chart(chartCanvas, config);
+      } catch (err) {
+        console.error("Chart render failed:", err);
+      }
+    }
+
+    function renderTable(table) {
+      if (!table || !table.rows || !table.rows.length) return;
+
+      tableCard.classList.remove("hidden");
+      const cols = table.columns || [];
+      const head = cols.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+      const body = table.rows
+        .map((row) => `<tr>${row.map((c) => `<td>${escapeHtml(c)}</td>`).join("")}</tr>`)
+        .join("");
+
+      const note = table.truncated
+        ? `<div class="table-note">// showing ${table.rows.length} of ${table.total_rows} rows</div>`
+        : "";
+
+      tableWrap.innerHTML = `
+        <table class="data-table">
+          <thead><tr>${head}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+        ${note}
+      `;
+    }
+
+    function formatMeta(payload) {
+      const cost = Number(payload.cost || 0).toFixed(6);
+      const t = payload.tokens || {};
+      const total = Number(t.total_tokens || 0);
+      const prompt = Number(t.prompt_tokens || 0);
+      const completion = Number(t.completion_tokens || 0);
+      const calls = Number(payload.llm_calls || 0);
+      const path = payload.query_path === "fast" ? "fast path" : "agent";
+      const parts = [`cost: $${cost}`];
+      if (total > 0) {
+        parts.push(
+          `tokens: ${total.toLocaleString()} total (${prompt.toLocaleString()} in / ${completion.toLocaleString()} out)`
+        );
+      }
+      if (calls > 0) {
+        parts.push(`${calls} LLM call${calls === 1 ? "" : "s"}`);
+      }
+      parts.push(`${path} · excl. embeddings`);
+      return parts.join(" · ");
+    }
+
+    function showResults(payload) {
+      const viz = payload.visualization || {};
+      const summary = viz.summary || payload.response || "";
+      summaryEl.textContent = summary;
+
+      renderChart(viz.chart);
+      renderTable(viz.table);
+
+      resultsEl.classList.remove("hidden");
+      metaEl.textContent = formatMeta(payload);
+      closeThinkingSmoothly();
+    }
+
+    function showError(message) {
+      errorCard.classList.remove("hidden");
+      errorText.textContent = message;
+      thinkingPanel.open = true;
+      thinkingEl.classList.remove("pulse");
+    }
+
+    function parseSseChunk(buffer) {
+      const events = [];
+      const parts = buffer.split("\n\n");
+      const rest = parts.pop() || "";
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        let eventName = "message";
+        let data = "";
+        for (const line of part.split("\n")) {
+          if (line.startsWith("event: ")) eventName = line.slice(7);
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (data) events.push({ event: eventName, data });
+      }
+      return { events, rest };
+    }
+
+    async function ask() {
+      const query = queryEl.value.trim();
+      if (!query) return;
+
+      askBtn.disabled = true;
+      resetUI();
+      startThinkingTimer();
+
+      try {
+        const res = await fetch("/api/query/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Request failed");
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseChunk(buffer);
+          buffer = parsed.rest;
+
+          for (const msg of parsed.events) {
+            const payload = JSON.parse(msg.data);
+            if (msg.event === "step") {
+              appendStep(payload);
+            } else if (msg.event === "status") {
+              thinkingSummary.textContent = `02 · ${payload.text || "Working…"}`;
+            } else if (msg.event === "done") {
+              stopThinkingTimer();
+              thinkingEl.classList.remove("pulse");
+              if (stepCount === 0) {
+                thinkingEl.classList.remove("loading", "has-steps");
+                thinkingEl.innerHTML = '<div class="loading">No steps recorded.</div>';
+                thinkingRenderedAt = Date.now();
+              }
+              showResults(payload);
+            } else if (msg.event === "error") {
+              throw new Error(payload.error || "Stream failed");
+            }
+          }
+        }
+      } catch (err) {
+        stopThinkingTimer();
+        showError(err.message);
+      } finally {
+        stopThinkingTimer();
+        askBtn.disabled = false;
+      }
+    }
+
+    askBtn.addEventListener("click", ask);
+    queryEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) ask();
+    });
+  </script>
+</body>
+</html>
