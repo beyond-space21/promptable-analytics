@@ -1,4 +1,5 @@
 .env
+makefile
 venv/
 CH/data/
 CH/logs/
