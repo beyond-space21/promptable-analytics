@@ -6,3 +6,4 @@ CH/logs/
 CH/SECRETS/
 Chart.js/
 clickhouse-docs/
+*__pycache__/
