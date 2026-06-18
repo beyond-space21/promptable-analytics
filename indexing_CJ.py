@@ -2,13 +2,18 @@ from pathlib import Path
 from llama_index.core import VectorStoreIndex, StorageContext, Document
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.vector_stores.clickhouse import ClickHouseVectorStore
-from ch_client import get_ch_client
+import clickhouse_connect
+import os
 
 # ========================= CONFIG =========================
 DOCS_ROOT = Path("./Chart.js")   # Path to cloned Chart.js repo
 
 OPENAI_EMBED_MODEL = "text-embedding-3-large"
 
+CH_HOST = "localhost"
+CH_PORT = 8123
+CH_USER = "admin"
+CH_PASSWORD = "hiffiofsuperlabs"
 CH_DATABASE = "rag_knowledge"
 CH_TABLE = "chartjs_docs_v1"      # Separate table for Chart.js
 
@@ -76,7 +81,10 @@ if __name__ == "__main__":
 
     # 2. Setup ClickHouse
     print("🔌 Connecting to ClickHouse...")
-    client = get_ch_client()
+    client = clickhouse_connect.get_client(
+        host=CH_HOST, port=CH_PORT, 
+        username=CH_USER, password=CH_PASSWORD
+    )
     client.command(f"CREATE DATABASE IF NOT EXISTS {CH_DATABASE}")
 
     vector_store = ClickHouseVectorStore(

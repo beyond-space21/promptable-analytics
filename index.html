@@ -136,11 +136,6 @@
       padding: 20px;
     }
 
-    .query-card {
-      position: relative;
-      z-index: 2;
-    }
-
     .query-card textarea {
       width: 100%;
       min-height: 80px;
@@ -493,7 +488,7 @@
     <header>
       <div class="wf-label">Application</div>
       <div class="brand-row">
-        <a href="https://www.dev.hiffi.com/" class="logo-link" title="Hiffi" target="_blank" rel="noopener noreferrer">
+        <a href="https://www.hiffi.com/" class="logo-link" title="Hiffi" target="_blank" rel="noopener noreferrer">
           <img src="https://www.hiffi.com/hiffi_logo.png" alt="Hiffi">
         </a>
         <h1>Promptable Analytics</h1>
@@ -571,16 +566,6 @@
     let thinkingCloseId = 0;
     const MIN_THINKING_MS = 2000;
     const THINKING_CLOSE_MS = 480;
-
-    /** Base path when served behind a reverse proxy (e.g. /promptable-analytics). */
-    function apiBasePath() {
-      const match = window.location.pathname.match(/^(\/promptable-analytics)/);
-      return match ? match[1] : "";
-    }
-
-    function apiUrl(path) {
-      return `${apiBasePath()}${path}`;
-    }
 
     const WF_CHART = {
       ink: "#2d3748",
@@ -674,23 +659,14 @@
       }
       if (closeId !== thinkingCloseId) return;
 
-      thinkingPanel.classList.add("closing");
       thinkingPanel.style.pointerEvents = "none";
-      try {
-        await new Promise((resolve) => setTimeout(resolve, THINKING_CLOSE_MS));
-      } finally {
-        if (closeId === thinkingCloseId) {
-          thinkingPanel.classList.remove("closing");
-          thinkingPanel.style.pointerEvents = "";
-        }
-      }
+      thinkingPanel.classList.add("closing");
+      await new Promise((resolve) => setTimeout(resolve, THINKING_CLOSE_MS));
       if (closeId !== thinkingCloseId) return;
 
       thinkingPanel.open = false;
-    }
-
-    function setAskBusy(busy) {
-      askBtn.disabled = busy;
+      thinkingPanel.classList.remove("closing");
+      thinkingPanel.style.pointerEvents = "";
     }
 
     function resetUI() {
@@ -894,30 +870,6 @@
       thinkingEl.classList.remove("pulse");
     }
 
-    async function readErrorBody(res) {
-      const text = await res.text();
-      try {
-        const data = JSON.parse(text);
-        return data.error || `Request failed (${res.status})`;
-      } catch {
-        if (/^\s*</.test(text)) {
-          return "API not reachable. Check that /api routes are proxied to web.py (port 8000).";
-        }
-        return text.trim() || `Request failed (${res.status})`;
-      }
-    }
-
-    function parseEventData(data) {
-      try {
-        return JSON.parse(data);
-      } catch {
-        if (/^\s*</.test(data)) {
-          throw new Error("Server returned HTML instead of stream data. Check the API proxy path.");
-        }
-        throw new Error("Invalid stream data from server");
-      }
-    }
-
     function parseSseChunk(buffer) {
       const events = [];
       const parts = buffer.split("\n\n");
@@ -940,34 +892,23 @@
       const query = queryEl.value.trim();
       if (!query) return;
 
-      setAskBusy(true);
+      askBtn.disabled = true;
       resetUI();
       startThinkingTimer();
 
-      let reader = null;
-
       try {
-        const res = await fetch(apiUrl("/api/query/stream"), {
+        const res = await fetch("/api/query/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ query }),
         });
 
-        const contentType = res.headers.get("content-type") || "";
-
         if (!res.ok) {
-          throw new Error(await readErrorBody(res));
+          const data = await res.json();
+          throw new Error(data.error || "Request failed");
         }
 
-        if (!contentType.includes("text/event-stream")) {
-          const text = await res.text();
-          if (/^\s*</.test(text)) {
-            throw new Error(`API route not found at ${apiUrl("/api/query/stream")}`);
-          }
-          throw new Error(text.trim() || "Unexpected response from server");
-        }
-
-        reader = res.body.getReader();
+        const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
 
@@ -980,7 +921,7 @@
           buffer = parsed.rest;
 
           for (const msg of parsed.events) {
-            const payload = parseEventData(msg.data);
+            const payload = JSON.parse(msg.data);
             if (msg.event === "step") {
               appendStep(payload);
             } else if (msg.event === "status") {
@@ -994,7 +935,6 @@
                 thinkingRenderedAt = Date.now();
               }
               showResults(payload);
-              return;
             } else if (msg.event === "error") {
               throw new Error(payload.error || "Stream failed");
             }
@@ -1005,14 +945,7 @@
         showError(err.message);
       } finally {
         stopThinkingTimer();
-        setAskBusy(false);
-        if (reader) {
-          try {
-            await reader.cancel();
-          } catch (_) {
-            /* stream may already be closed */
-          }
-        }
+        askBtn.disabled = false;
       }
     }
 
