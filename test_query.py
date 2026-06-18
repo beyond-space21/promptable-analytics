@@ -5,13 +5,7 @@ from llama_index.llms.openai import OpenAI
 from llama_index.core.tools import FunctionTool, QueryEngineTool
 import asyncio
 import re
-import clickhouse_connect
-
-# ========================= CONFIG =========================
-CH_HOST = "localhost"
-CH_PORT = 8123
-CH_USER = "admin"
-CH_PASSWORD = "hiffiofsuperlabs"
+from ch_client import get_ch_client
 # RAG knowledge base (vector store — docs only)
 RAG_DATABASE = "rag_knowledge"
 CH_TABLE = "clickhouse_docs_v1"
@@ -83,10 +77,8 @@ aux_llm = OpenAI(model=AUX_LLM_MODEL, temperature=0.0)
 
 embed_model = OpenAIEmbedding(model=EMBED_MODEL)
 
-# Connect to vector store
-client = clickhouse_connect.get_client(
-    host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASSWORD
-)
+# Connect to vector store (native protocol)
+client = get_ch_client()
 
 vector_store = ClickHouseVectorStore(
     clickhouse_client=client,
@@ -99,27 +91,21 @@ index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embed_model
 query_engine = index.as_query_engine(llm=llm, similarity_top_k=5)
 
 # =============== TOOLS ===============
-def get_ch_client(database: str = QUERY_DATABASE):
-    return clickhouse_connect.get_client(
-        host=CH_HOST,
-        port=CH_PORT,
-        username=CH_USER,
-        password=CH_PASSWORD,
-        database=database,
-    )
+def _query_client(database: str = QUERY_DATABASE):
+    return get_ch_client(database)
 
 def get_table_schema(table_name: str) -> str:
-    conn = get_ch_client()
+    conn = _query_client()
     result = conn.query(f"DESCRIBE TABLE {QUERY_DATABASE}.{table_name}")
     return str(result.result_rows)
 
 def list_tables() -> str:
-    conn = get_ch_client()
+    conn = _query_client()
     result = conn.query(f"SHOW TABLES FROM {QUERY_DATABASE}")
     return str(result.result_rows)
 
 def validate_query(sql: str) -> str:
-    conn = get_ch_client()
+    conn = _query_client()
     try:
         result = conn.query(f"EXPLAIN {_apply_sql_row_cap(sql)}")
         return "Valid ✓\n" + str(result.result_rows)
@@ -162,7 +148,7 @@ def _format_rows_for_display_from_text(text: str) -> str:
 
 
 def execute_sql(sql: str) -> str:
-    conn = get_ch_client()
+    conn = _query_client()
     try:
         safe_sql = _apply_sql_row_cap(sql)
         result = conn.query(safe_sql, settings=_ch_query_settings())

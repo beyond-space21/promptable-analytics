@@ -3,6 +3,7 @@ import asyncio
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 from test_query import LLM_MODEL, run_query_stream
 
@@ -14,18 +15,29 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:
         print(f"[{self.log_date_time_string()}] {format % args}")
 
+    def _request_path(self) -> str:
+        return urlparse(self.path).path.rstrip("/") or "/"
+
     def do_GET(self) -> None:
-        if self.path in ("/", "/index.html"):
+        path = self._request_path()
+        if path in ("/", "/index.html"):
             self._send(200, HTML_PATH.read_bytes(), "text/html; charset=utf-8")
+            return
+        if path.startswith("/api/"):
+            self._send_json(404, {"error": f"Not found: {path}"})
             return
         self.send_error(404)
 
     def do_POST(self) -> None:
-        if self.path == "/api/query/stream":
+        path = self._request_path()
+        if path == "/api/query/stream":
             self._handle_query_stream()
             return
-        if self.path == "/api/query":
+        if path == "/api/query":
             self._handle_query_json()
+            return
+        if path.startswith("/api/"):
+            self._send_json(404, {"error": f"Not found: {path}"})
             return
         self.send_error(404)
 
@@ -59,7 +71,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
+            self.send_header("Connection", "close")
             self.end_headers()
 
             async def stream() -> None:
