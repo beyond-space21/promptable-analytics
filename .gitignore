@@ -1,6 +1,7 @@
 .env
 makefile
 venv/
+vnev/
 CH/data/
 CH/logs/
 CH/SECRETS/
